@@ -16,7 +16,7 @@ class DataConfig:
     
     # Image processing
     image_size: int = 64
-    grayscale: bool = True
+    grayscale: bool = False
     
     # Data splits
     train_split: float = 0.8
@@ -30,7 +30,7 @@ class DataConfig:
 @dataclass
 class ModelConfig:
     """Configuration for model architecture."""
-    input_channels: int = 1
+    input_channels: int = 3
     conv_channels: List[int] = field(default_factory=lambda: [64, 128, 256])
     kernel_size: int = 3
     pool_size: int = 4
