@@ -248,7 +248,10 @@ class UnifiedTrainer:
 
             self.optimizer.zero_grad()
             outputs = self.model(images)
-            loss = self.criterion(outputs, targets)
+            loss = self.criterion(
+                self.coord_normalizer.normalize(outputs),
+                self.coord_normalizer.normalize(targets)
+            )
             loss.backward()
 
             if self.config.training.gradient_clipping > 0:
@@ -277,7 +280,10 @@ class UnifiedTrainer:
                 targets = targets.to(self.device)
 
                 outputs = self.model(images)
-                loss = self.criterion(outputs, targets)
+                loss = self.criterion(
+                    self.coord_normalizer.normalize(outputs),
+                    self.coord_normalizer.normalize(targets)
+                )
                 total_loss += loss.item()
 
         avg_loss = total_loss / len(self.val_loader)

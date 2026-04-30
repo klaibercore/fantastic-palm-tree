@@ -10,7 +10,6 @@ import torch
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from mpl_toolkits.basemap import Basemap
 import numpy as np
 from pathlib import Path
 import logging
@@ -23,6 +22,25 @@ from models import create_location_regressor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Map backend selection: cartopy (modern) > basemap (legacy) > none
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    HAS_CARTOPY = True
+except ImportError:
+    HAS_CARTOPY = False
+
+try:
+    from mpl_toolkits.basemap import Basemap
+    HAS_BASEMAP = True
+except ImportError:
+    HAS_BASEMAP = False
+
+if not HAS_CARTOPY and not HAS_BASEMAP:
+    logger.warning("Neither cartopy nor basemap installed. Map plots will be unavailable.")
+elif HAS_BASEMAP and not HAS_CARTOPY:
+    logger.warning("Basemap is deprecated. Install cartopy for better map support.")
 
 
 def load_model(config, model_path: str):
@@ -86,6 +104,48 @@ def load_original_image(image_path):
     return np.array(Image.open(image_path).convert('RGB'))
 
 
+def _draw_miller_map(ax=None):
+    """Set up a Miller-projection world map. Returns (ax, is_cartopy)."""
+    if not HAS_CARTOPY and not HAS_BASEMAP:
+        raise RuntimeError("Install cartopy or basemap for map plots")
+
+    if HAS_CARTOPY:
+        if ax is None:
+            ax = plt.gca()
+        ax = plt.subplot(projection=ccrs.Miller())
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.25)
+        ax.add_feature(cfeature.LAND, facecolor='lightgray')
+        ax.add_feature(cfeature.OCEAN, facecolor='lightblue')
+        return ax, True
+    else:
+        m = Basemap(projection='mill', llcrnrlat=-60, urcrnrlat=85,
+                    llcrnrlon=-180, urcrnrlon=180, resolution='c')
+        m.drawcoastlines(linewidth=0.5)
+        m.drawcountries(linewidth=0.25)
+        m.fillcontinents(color='lightgray', lake_color='lightblue')
+        m.drawmapboundary(fill_color='lightblue')
+        return m, False
+
+
+def _draw_map_point(backend, lon, lat, is_cartopy, **scatter_kwargs):
+    """Plot a point on either cartopy or basemap backend."""
+    if is_cartopy:
+        backend.scatter(lon, lat, transform=ccrs.PlateCarree(), **scatter_kwargs)
+    else:
+        x, y = backend(lon, lat)
+        backend.scatter(x, y, **scatter_kwargs)
+
+
+def _draw_map_line(backend, lons, lats, is_cartopy, **plot_kwargs):
+    """Draw a line on either cartopy or basemap backend."""
+    if is_cartopy:
+        backend.plot(lons, lats, transform=ccrs.PlateCarree(), **plot_kwargs)
+    else:
+        x, y = backend(lons, lats)
+        backend.plot(x, y, **plot_kwargs)
+
+
 def plot_single(image_np, true_coords, pred_coords, save_path=None, show_plot=True):
     """Plot image alongside prediction on world map."""
     img_np = image_np
@@ -98,32 +158,30 @@ def plot_single(image_np, true_coords, pred_coords, save_path=None, show_plot=Tr
     ax1.axis('off')
 
     ax2 = plt.subplot(1, 2, 2)
-    m = Basemap(projection='mill', llcrnrlat=-60, urcrnrlat=85,
-                llcrnrlon=-180, urcrnrlon=180, resolution='c')
-    m.drawcoastlines(linewidth=0.5)
-    m.drawcountries(linewidth=0.25)
-    m.fillcontinents(color='lightgray', lake_color='lightblue')
-    m.drawmapboundary(fill_color='lightblue')
+    backend, is_cartopy = _draw_miller_map(ax2)
 
     true_lon, true_lat = true_coords[0], true_coords[1]
     pred_lon, pred_lat = pred_coords[0], pred_coords[1]
 
-    x_true, y_true = m(true_lon, true_lat)
-    m.scatter(x_true, y_true, marker='o', color='green', s=100,
-              label=f'True: ({true_lon:.2f}, {true_lat:.2f})',
-              edgecolors='black', linewidth=2, zorder=5)
+    _draw_map_point(backend, true_lon, true_lat, is_cartopy,
+                    marker='o', color='green', s=100, edgecolors='black',
+                    linewidth=2, zorder=5,
+                    label=f'True: ({true_lon:.2f}, {true_lat:.2f})')
 
-    x_pred, y_pred = m(pred_lon, pred_lat)
-    m.scatter(x_pred, y_pred, marker='x', color='red', s=100,
-              label=f'Pred: ({pred_lon:.2f}, {pred_lat:.2f})',
-              linewidths=3, zorder=5)
+    _draw_map_point(backend, pred_lon, pred_lat, is_cartopy,
+                    marker='x', color='red', s=100, linewidths=3, zorder=5,
+                    label=f'Pred: ({pred_lon:.2f}, {pred_lat:.2f})')
 
     error_km = haversine_km(true_coords, pred_coords)
-    m.plot([x_true, x_pred], [y_true, y_pred], 'b--', alpha=0.7, linewidth=2,
-           label=f'Error: {error_km:.1f} km')
+    _draw_map_line(backend, [true_lon, pred_lon], [true_lat, pred_lat], is_cartopy,
+                   'b--', alpha=0.7, linewidth=2, label=f'Error: {error_km:.1f} km')
 
-    m.drawmeridians(np.arange(-180, 181, 60), labels=[0, 0, 0, 1], fontsize=10)
-    m.drawparallels(np.arange(-90, 91, 30), labels=[1, 0, 0, 0], fontsize=10)
+    if not is_cartopy:
+        backend.drawmeridians(np.arange(-180, 181, 60), labels=[0, 0, 0, 1], fontsize=10)
+        backend.drawparallels(np.arange(-90, 91, 30), labels=[1, 0, 0, 0], fontsize=10)
+    else:
+        backend.gridlines(draw_labels=True)
+
     ax2.set_title('Coordinate Prediction')
     ax2.legend(loc='upper right')
 
@@ -153,26 +211,22 @@ def plot_multiple(images, true_list, pred_list, save_path=None, show_plot=True):
         ax_img.axis('off')
 
         ax_map = plt.subplot(rows, cols * 2, i * 2 + 2)
-        m = Basemap(projection='mill', llcrnrlat=-60, urcrnrlat=85,
-                    llcrnrlon=-180, urcrnrlon=180, resolution='c')
-        m.drawcoastlines(linewidth=0.5)
-        m.drawcountries(linewidth=0.25)
-        m.fillcontinents(color='lightgray', lake_color='lightblue')
-        m.drawmapboundary(fill_color='lightblue')
+        backend, is_cartopy = _draw_miller_map(ax_map)
 
         true_lon, true_lat = true_list[i][0], true_list[i][1]
         pred_lon, pred_lat = pred_list[i][0], pred_list[i][1]
 
-        x_true, y_true = m(true_lon, true_lat)
-        m.scatter(x_true, y_true, marker='o', color='green', s=80,
-                  label='True', edgecolors='black', linewidth=1.5, zorder=5)
+        _draw_map_point(backend, true_lon, true_lat, is_cartopy,
+                        marker='o', color='green', s=80, edgecolors='black',
+                        linewidth=1.5, zorder=5, label='True')
 
-        x_pred, y_pred = m(pred_lon, pred_lat)
-        m.scatter(x_pred, y_pred, marker='x', color='red', s=80,
-                  label='Pred', linewidths=2, zorder=5)
+        _draw_map_point(backend, pred_lon, pred_lat, is_cartopy,
+                        marker='x', color='red', s=80, linewidths=2, zorder=5,
+                        label='Pred')
 
         error_km = haversine_km(true_list[i], pred_list[i])
-        m.plot([x_true, x_pred], [y_true, y_pred], 'b--', alpha=0.7, linewidth=1.5)
+        _draw_map_line(backend, [true_lon, pred_lon], [true_lat, pred_lat], is_cartopy,
+                       'b--', alpha=0.7, linewidth=1.5)
 
         ax_map.text(0.02, 0.98, f'{error_km:.0f} km',
                     transform=ax_map.transAxes, fontsize=10, fontweight='bold',
@@ -197,18 +251,20 @@ def plot_world_error_map(true_list, pred_list, save_path=None, show_plot=True):
     true_arr = np.array(true_list)  # [N, 2] with [lon, lat]
 
     fig = plt.figure(figsize=(16, 10))
-    m = Basemap(projection='mill', llcrnrlat=-60, urcrnrlat=85,
-                llcrnrlon=-180, urcrnrlon=180, resolution='c')
-    m.drawcoastlines(linewidth=0.5)
-    m.drawcountries(linewidth=0.25)
-    m.fillcontinents(color='lightgray', lake_color='lightblue')
-    m.drawmapboundary(fill_color='lightblue')
-    m.drawmeridians(np.arange(-180, 181, 60), labels=[0, 0, 0, 1], fontsize=10)
-    m.drawparallels(np.arange(-90, 91, 30), labels=[1, 0, 0, 0], fontsize=10)
+    backend, is_cartopy = _draw_miller_map()
 
-    x, y = m(true_arr[:, 0], true_arr[:, 1])
-    scatter = m.scatter(x, y, c=errors, cmap='RdYlGn_r', s=40, alpha=0.8,
-                        edgecolors='black', linewidth=0.3, zorder=5)
+    if is_cartopy:
+        scatter = backend.scatter(true_arr[:, 0], true_arr[:, 1],
+                                   c=errors, cmap='RdYlGn_r', s=40, alpha=0.8,
+                                   edgecolors='black', linewidth=0.3, zorder=5,
+                                   transform=ccrs.PlateCarree())
+        backend.gridlines(draw_labels=True)
+    else:
+        x, y = backend(true_arr[:, 0], true_arr[:, 1])
+        scatter = backend.scatter(x, y, c=errors, cmap='RdYlGn_r', s=40, alpha=0.8,
+                                  edgecolors='black', linewidth=0.3, zorder=5)
+        backend.drawmeridians(np.arange(-180, 181, 60), labels=[0, 0, 0, 1], fontsize=10)
+        backend.drawparallels(np.arange(-90, 91, 30), labels=[1, 0, 0, 0], fontsize=10)
 
     cbar = plt.colorbar(scatter, orientation='horizontal', pad=0.05, shrink=0.7)
     cbar.set_label('Prediction Error (km)', fontsize=12)

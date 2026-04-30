@@ -71,6 +71,9 @@ class TrainingConfig:
     # Hardware
     num_threads: int = 16
 
+    # Reproducibility
+    random_seed: int = 42
+
 
 @dataclass
 class Config:
@@ -83,6 +86,18 @@ class Config:
         # Auto-detect best available device
         if self.training.device == "auto":
             self.training.device = self._get_best_device()
+
+        # Validate grayscale <-> input_channels consistency
+        if self.data.grayscale and self.model.input_channels != 1:
+            raise ValueError(
+                f"config.data.grayscale=True requires config.model.input_channels=1 "
+                f"(got {self.model.input_channels})"
+            )
+        if not self.data.grayscale and self.model.input_channels != 3:
+            raise ValueError(
+                f"config.data.grayscale=False requires config.model.input_channels=3 "
+                f"(got {self.model.input_channels})"
+            )
     
     def _get_best_device(self) -> str:
         """Get the best available device for training."""

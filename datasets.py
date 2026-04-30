@@ -26,12 +26,16 @@ class SatelliteImageDataset(Dataset):
         split: str = "train",
         train_split: float = 0.8,
         val_split: float = 0.1,
-        random_seed: int = 42
+        random_seed: int = 42,
+        image_size: int = 64,
+        grayscale: bool = False,
     ):
         self.image_dir = Path(image_dir)
         self.metadata_dir = Path(metadata_dir)
         self.transform = transform
         self.split = split
+        self.image_size = image_size
+        self.grayscale = grayscale
         
         # Load all metadata and create image-coordinate pairs
         self.samples = self._load_samples()
@@ -41,77 +45,83 @@ class SatelliteImageDataset(Dataset):
         
         logger.info(f"Loaded {len(self.samples)} samples for {split} split")
     
-    def _load_samples(self) -> List[Tuple[str, Tuple[float, float]]]:
-        """Load image paths and their corresponding coordinates from date folders."""
-        samples = []
-        
-        # Scan images directory for date folders
+    def _load_samples(self) -> Dict[str, List[Tuple[str, Tuple[float, float]]]]:
+        """Load image paths and their coordinates, grouped by date."""
+        samples_by_date = {}
+        date_dir_count = 0
+
         if not self.image_dir.exists():
             logger.error(f"Images directory not found: {self.image_dir}")
-            return samples
-            
+            return samples_by_date
+
         for date_dir in sorted(self.image_dir.iterdir()):
             if not date_dir.is_dir():
                 continue
-                
+            date_dir_count += 1
+
             date = date_dir.name
             metadata_file = self.metadata_dir / f"{date}.json"
-            
-            # If no metadata file exists for this date, skip
+
             if not metadata_file.exists():
                 continue
-                
+
             try:
                 with open(metadata_file, 'r') as f:
                     data = json.load(f)
-                
-                # Create a mapping of image names to coordinates for quick lookup
+
                 coord_map = {}
                 for item in data:
                     image_name = item.get("image")
                     coords = item.get("centroid_coordinates", {})
-                    
-                    if image_name and coords.get("lat") and coords.get("lon"):
+
+                    if image_name and coords.get("lat") is not None and coords.get("lon") is not None:
                         coord_map[image_name] = (float(coords["lat"]), float(coords["lon"]))
-                
-                # Match images in the date folder with coordinates
-                for image_file in date_dir.glob("*.png"):
-                    image_name = image_file.stem  # Remove .png extension
-                    
+
+                date_samples = []
+                for image_file in sorted(date_dir.glob("*.png")):
+                    image_name = image_file.stem
+
                     if image_name in coord_map:
                         lat, lon = coord_map[image_name]
-                        samples.append((str(image_file), (lat, lon)))
-                            
+                        date_samples.append((str(image_file), (lat, lon)))
+
+                if date_samples:
+                    samples_by_date[date] = date_samples
+
             except Exception as e:
                 logger.warning(f"Error processing {date}: {e}")
-        
-        logger.info(f"Found {len(samples)} image-coordinate pairs across {len(list(self.image_dir.iterdir()))} date folders")
-        return samples
-    
+
+        total = sum(len(s) for s in samples_by_date.values())
+        logger.info(f"Found {total} image-coordinate pairs across {len(samples_by_date)} dates ({date_dir_count} date dirs scanned)")
+        return samples_by_date
+
     def _split_data(
-        self, 
-        train_split: float, 
-        val_split: float, 
+        self,
+        train_split: float,
+        val_split: float,
         random_seed: int
     ) -> List[Tuple[str, Tuple[float, float]]]:
-        """Split data into train/val/test sets."""
+        """Split data at the date level to prevent temporal leakage between splits."""
         import random
-        
+
         random.seed(random_seed)
-        random.shuffle(self.samples)
-        
-        n_samples = len(self.samples)
-        n_train = int(n_samples * train_split)
-        n_val = int(n_samples * val_split)
-        
+        dates = sorted(self.samples.keys())
+        random.shuffle(dates)
+
+        n_dates = len(dates)
+        n_train = max(1, int(n_dates * train_split))
+        n_val = max(1, int(n_dates * val_split))
+
         if self.split == "train":
-            return self.samples[:n_train]
+            split_dates = set(dates[:n_train])
         elif self.split == "val":
-            return self.samples[n_train:n_train + n_val]
+            split_dates = set(dates[n_train:n_train + n_val])
         elif self.split == "test":
-            return self.samples[n_train + n_val:]
+            split_dates = set(dates[n_train + n_val:])
         else:
             raise ValueError(f"Unknown split: {self.split}")
+
+        return [s for date in dates if date in split_dates for s in self.samples[date]]
     
     def __len__(self) -> int:
         return len(self.samples)
@@ -125,8 +135,9 @@ class SatelliteImageDataset(Dataset):
             image = Image.open(image_path).convert('RGB')
         except Exception as e:
             logger.error(f"Error loading image {image_path}: {e}")
-            # Return a black image as fallback
-            image = Image.new('RGB', (64, 64), color='black')
+            # Return a black image as fallback, respecting config settings
+            mode = 'L' if self.grayscale else 'RGB'
+            image = Image.new(mode, (self.image_size, self.image_size), color='black')
         
         # Apply transforms
         if self.transform:
@@ -199,25 +210,31 @@ def create_dataloaders(
         transform=transform,
         split="train",
         train_split=config.data.train_split,
-        val_split=config.data.val_split
+        val_split=config.data.val_split,
+        image_size=config.data.image_size,
+        grayscale=config.data.grayscale,
     )
-    
+
     val_dataset = SatelliteImageDataset(
         image_dir=config.data.images_dir,
         metadata_dir=config.data.combined_dir,
         transform=transform,
         split="val",
         train_split=config.data.train_split,
-        val_split=config.data.val_split
+        val_split=config.data.val_split,
+        image_size=config.data.image_size,
+        grayscale=config.data.grayscale,
     )
-    
+
     test_dataset = SatelliteImageDataset(
         image_dir=config.data.images_dir,
         metadata_dir=config.data.combined_dir,
         transform=transform,
         split="test",
         train_split=config.data.train_split,
-        val_split=config.data.val_split
+        val_split=config.data.val_split,
+        image_size=config.data.image_size,
+        grayscale=config.data.grayscale,
     )
     
     # Create dataloaders with optimized settings
@@ -244,7 +261,7 @@ def create_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=pin_memory
     )
     
     return train_loader, val_loader, test_loader
@@ -349,6 +366,7 @@ class CoordinateNormalizer:
         dlon = torch.where(dlon < -torch.pi, dlon + 2*torch.pi, dlon)
         
         a = torch.sin(dlat/2)**2 + torch.cos(pred_lat_rad) * torch.cos(true_lat_rad) * torch.sin(dlon/2)**2
+        a = torch.clamp(a, max=1.0)  # Prevent NaN from float rounding
         c = 2 * torch.asin(torch.sqrt(a))
         
         distance = R * c

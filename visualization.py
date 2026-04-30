@@ -7,7 +7,6 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from mpl_toolkits.basemap import Basemap
 import pandas as pd
 from typing import List, Tuple, Optional
 try:
@@ -15,6 +14,28 @@ try:
 except ImportError:
     sns = None
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Map backend selection: cartopy (modern) > basemap (legacy) > none
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    HAS_CARTOPY = True
+except ImportError:
+    HAS_CARTOPY = False
+
+try:
+    from mpl_toolkits.basemap import Basemap
+    HAS_BASEMAP = True
+except ImportError:
+    HAS_BASEMAP = False
+
+if not HAS_CARTOPY and not HAS_BASEMAP:
+    logger.warning("Neither cartopy nor basemap installed. Map plots will be unavailable.")
+elif HAS_BASEMAP and not HAS_CARTOPY:
+    logger.warning("Basemap is deprecated. Install cartopy for better map support.")
 
 
 
@@ -59,41 +80,55 @@ def plot_world_map_with_coordinates(
     show_plot: bool = True,
     highlight_points: Optional[List[Tuple[float, float]]] = None
 ) -> None:
-    """Plot coordinates on world map using Basemap."""
+    """Plot coordinates on world map using cartopy (preferred) or basemap (fallback)."""
+    if not HAS_CARTOPY and not HAS_BASEMAP:
+        logger.error("Cannot plot world map: install cartopy or basemap")
+        return
+
     fig = plt.figure(figsize=(12, 8))
-    
-    # Set up orthographic map projection
-    m = Basemap(projection='ortho', lat_0=30, lon_0=10, resolution='c')
-    
-    # Draw map features
-    m.drawcoastlines(linewidth=0.5)
-    m.drawcountries(linewidth=0.25)
-    m.fillcontinents(color='lightgray', lake_color='lightblue')
-    m.drawmapboundary(fill_color='lightblue')
-    
-    # Draw lat/lon grid lines
-    m.drawmeridians(np.arange(0, 360, 30))
-    m.drawparallels(np.arange(-90, 90, 30))
-    
-    # Plot coordinates
-    if lat_coords and lon_coords:
-        x, y = m(lon_coords, lat_coords)
-        m.scatter(x, y, marker='D', color='m', s=10, alpha=0.6, 
-                  label="Satellite coordinates")
-    
-    # Highlight specific points
-    if highlight_points:
-        for i, (lat, lon) in enumerate(highlight_points):
-            x, y = m(lon, lat)
-            m.scatter(x, y, marker='o', color='red', s=100, 
-                      label=f"Point {i+1}")
-    
+
+    if HAS_CARTOPY:
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.Orthographic(central_longitude=10, central_latitude=30))
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.25)
+        ax.add_feature(cfeature.LAND, facecolor='lightgray')
+        ax.add_feature(cfeature.OCEAN, facecolor='lightblue')
+        ax.gridlines(draw_labels=True)
+
+        if lat_coords and lon_coords:
+            ax.scatter(lon_coords, lat_coords, marker='D', color='m', s=10, alpha=0.6,
+                       transform=ccrs.PlateCarree(), label="Satellite coordinates")
+
+        if highlight_points:
+            for i, (lat, lon) in enumerate(highlight_points):
+                ax.scatter(lon, lat, marker='o', color='red', s=100,
+                           transform=ccrs.PlateCarree(), label=f"Point {i+1}")
+    else:
+        m = Basemap(projection='ortho', lat_0=30, lon_0=10, resolution='c')
+        m.drawcoastlines(linewidth=0.5)
+        m.drawcountries(linewidth=0.25)
+        m.fillcontinents(color='lightgray', lake_color='lightblue')
+        m.drawmapboundary(fill_color='lightblue')
+        m.drawmeridians(np.arange(0, 360, 30))
+        m.drawparallels(np.arange(-90, 90, 30))
+
+        if lat_coords and lon_coords:
+            x, y = m(lon_coords, lat_coords)
+            m.scatter(x, y, marker='D', color='m', s=10, alpha=0.6,
+                      label="Satellite coordinates")
+
+        if highlight_points:
+            for i, (lat, lon) in enumerate(highlight_points):
+                x, y = m(lon, lat)
+                m.scatter(x, y, marker='o', color='red', s=100,
+                          label=f"Point {i+1}")
+
     plt.title(title)
     plt.legend()
-    
+
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    
+
     if show_plot:
         plt.show()
     else:
@@ -213,14 +248,11 @@ def plot_error_distribution(
     else:
         pred_coords_np = pred_coords
     
-    # Use proper longitude error calculation
-    lon_errors = np.abs(true_coords_np[:, 0] - pred_coords_np[:, 0])
-    lat_errors = np.abs(true_coords_np[:, 1] - pred_coords_np[:, 1])
-    
     # Account for longitude wraparound
     lon_direct_diff = np.abs(true_coords_np[:, 0] - pred_coords_np[:, 0])
     lon_wrap_diff = 360.0 - lon_direct_diff
     lon_errors = np.minimum(lon_direct_diff, lon_wrap_diff)
+    lat_errors = np.abs(true_coords_np[:, 1] - pred_coords_np[:, 1])
     
     # Calculate Euclidean distance errors in degrees
     distance_errors = np.sqrt(lon_errors**2 + lat_errors**2)
@@ -346,63 +378,64 @@ def plot_predictions_on_world_map(
     show_plot: bool = True,
     max_points: int = 1000
 ) -> None:
-    """Plot prediction errors on world map for geographic error analysis."""
-    # Coordinates are already in raw [lon, lat] degrees
+    """Plot prediction errors on world map using cartopy (preferred) or basemap (fallback)."""
+    if not HAS_CARTOPY and not HAS_BASEMAP:
+        logger.error("Cannot plot world map: install cartopy or basemap")
+        return
+
     true_coords_np = true_coords.cpu().numpy()
     pred_coords_np = pred_coords.cpu().numpy()
-    
-    # Calculate errors
+
     lon_errors = np.abs(true_coords_np[:, 0] - pred_coords_np[:, 0])
     lat_errors = np.abs(true_coords_np[:, 1] - pred_coords_np[:, 1])
     distance_errors = np.sqrt(lon_errors**2 + lat_errors**2)
-    
-    # Sample points if too many for visualization
+
     if len(true_coords_np) > max_points:
         indices = np.random.choice(len(true_coords_np), max_points, replace=False)
         true_coords_np = true_coords_np[indices]
         pred_coords_np = pred_coords_np[indices]
         distance_errors = distance_errors[indices]
-    
+
     fig = plt.figure(figsize=(15, 10))
-    
-    # Set up world map
-    m = Basemap(projection='mill', llcrnrlat=-60, urcrnrlat=85,
-                llcrnrlon=-180, urcrnrlon=180, resolution='c')
-    
-    # Draw map features
-    m.drawcoastlines(linewidth=0.5)
-    m.drawcountries(linewidth=0.25)
-    m.fillcontinents(color='lightgray', lake_color='lightblue')
-    m.drawmapboundary(fill_color='lightblue')
-    
-    # Convert coordinates to map coordinates
-    lon_true, lat_true = true_coords_np[:, 0], true_coords_np[:, 1]
-    x, y = m(lon_true, lat_true)
-    
-    # Create scatter plot with color representing error magnitude
-    scatter = m.scatter(x, y, c=distance_errors, s=20, alpha=0.7, 
-                       cmap='Reds', edgecolors='black', linewidth=0.5)
-    
-    # Add colorbar
-    cbar = plt.colorbar(scatter, ax=plt.gca(), label='Prediction Error (degrees)', 
-                       orientation='vertical', pad=0.02, shrink=0.8)
-    
-    # Add grid lines
-    m.drawmeridians(np.arange(-180, 181, 60), labels=[0,0,0,1], fontsize=10)
-    m.drawparallels(np.arange(-90, 91, 30), labels=[1,0,0,0], fontsize=10)
-    
-    # Add title with statistics
+
+    if HAS_CARTOPY:
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.Miller())
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.25)
+        ax.add_feature(cfeature.LAND, facecolor='lightgray')
+        ax.add_feature(cfeature.OCEAN, facecolor='lightblue')
+        ax.gridlines(draw_labels=True)
+
+        scatter = ax.scatter(true_coords_np[:, 0], true_coords_np[:, 1],
+                             c=distance_errors, s=20, alpha=0.7, cmap='Reds',
+                             edgecolors='black', linewidth=0.5, transform=ccrs.PlateCarree())
+    else:
+        m = Basemap(projection='mill', llcrnrlat=-60, urcrnrlat=85,
+                    llcrnrlon=-180, urcrnrlon=180, resolution='c')
+        m.drawcoastlines(linewidth=0.5)
+        m.drawcountries(linewidth=0.25)
+        m.fillcontinents(color='lightgray', lake_color='lightblue')
+        m.drawmapboundary(fill_color='lightblue')
+        m.drawmeridians(np.arange(-180, 181, 60), labels=[0,0,0,1], fontsize=10)
+        m.drawparallels(np.arange(-90, 91, 30), labels=[1,0,0,0], fontsize=10)
+
+        lon_true, lat_true = true_coords_np[:, 0], true_coords_np[:, 1]
+        x, y = m(lon_true, lat_true)
+        scatter = m.scatter(x, y, c=distance_errors, s=20, alpha=0.7,
+                            cmap='Reds', edgecolors='black', linewidth=0.5)
+
+    plt.colorbar(scatter, ax=plt.gca(), label='Prediction Error (degrees)',
+                 orientation='vertical', pad=0.02, shrink=0.8)
+
     title = (f'Coordinate Prediction Errors Worldwide\n'
             f'Mean Error: {distance_errors.mean():.3f}°, '
             f'Median Error: {np.median(distance_errors):.3f}°, '
             f'Max Error: {distance_errors.max():.3f}°')
     plt.title(title, fontsize=14, fontweight='bold')
-    
-    
-    
+
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    
+
     if show_plot:
         plt.show()
     else:

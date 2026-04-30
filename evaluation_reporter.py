@@ -44,11 +44,11 @@ class EvaluationReporter:
         lon_errors = normalizer.compute_longitude_error(pred_coords[:, 0], true_coords[:, 0])
         lat_errors = torch.abs(pred_coords[:, 1] - true_coords[:, 1])
         
-        # Move to CPU for calculations
-        coord_errors_cpu = coord_errors.abs().cpu()
-        haversine_cpu = haversine_distances.abs().cpu()
-        lon_errors_cpu = lon_errors.abs().cpu()
-        lat_errors_cpu = lat_errors.abs().cpu()
+        # Move to CPU for calculations (all values already non-negative)
+        coord_errors_cpu = coord_errors.cpu()
+        haversine_cpu = haversine_distances.cpu()
+        lon_errors_cpu = lon_errors.cpu()
+        lat_errors_cpu = lat_errors.cpu()
         
         # Compile comprehensive report data
         self.report_data = {

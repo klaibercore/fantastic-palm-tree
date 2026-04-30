@@ -94,8 +94,10 @@ class EPICDataDownloader:
                     content = await resp.read()
 
             date_dir.mkdir(parents=True, exist_ok=True)
-            with open(image_path, "wb") as f:
+            tmp_path = image_path.with_suffix('.tmp')
+            with open(tmp_path, "wb") as f:
                 f.write(content)
+            tmp_path.rename(image_path)
 
             logger.debug(f"Downloaded: {image_path}")
             return True
