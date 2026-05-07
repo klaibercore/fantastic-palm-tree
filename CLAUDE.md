@@ -10,7 +10,7 @@ PyTorch CNN (`LocationRegressor`) that predicts geographic coordinates (lon, lat
 
 | File | Role |
 |------|------|
-| `main.py` | CLI entry point: `setup`, `train regressor`, `evaluate <path>`, `download [days]`. Sets seeds for reproducibility. |
+| `main.py` | CLI entry point: `setup`, `train regressor`, `evaluate <path>`, `visualize <path>`, `download [days]`. Sets seeds for reproducibility. |
 | `config.py` | Dataclass-based `Config(DataConfig, ModelConfig, TrainingConfig)`. Auto-detects device (CUDA > MPS > CPU). Validates grayscale ↔ input_channels consistency in `__post_init__`. |
 | `data.py` | `EPICDataDownloader` (async aiohttp, semaphore-limited concurrency, atomic .tmp → rename). `CoordinateExtractor` parses `centroid_coordinates` from per-date JSON. |
 | `datasets.py` | `SatelliteImageDataset` loads images + coords. `_split_data()` shuffles **dates** (not samples) to prevent temporal leakage. `CoordinateNormalizer` normalizes to [0,1], denormalizes, computes Haversine distance (with NaN clamping) and longitude wraparound error. `create_dataloaders()` adjusts `num_workers`/`pin_memory` per device (MPS → workers=0, pin_memory=False). |
@@ -20,6 +20,7 @@ PyTorch CNN (`LocationRegressor`) that predicts geographic coordinates (lon, lat
 | `visualization.py` | Map backend: **cartopy** (preferred) → Basemap (fallback). Distribution plots, training curves, prediction scatter, world error maps. |
 | `eda.py` | Standalone EDA: image statistics, PCA (2 components), K-Means (K=2..8, optimal via silhouette), correlations, 5×4 overview figure, TensorBoard logging. |
 | `test_predictions.py` | Single/multiple/world-error-map prediction visualization with cartopy/Basemap backend. |
+| `visualize_representation.py` | Extracts 128-d test embeddings via `model.get_embeddings()`, runs `StandardScaler + KMeans` on them, reorders cluster ids by each centroid's PC1 score for colormap continuity, and renders the clusters on a Miller-projection world map. Reuses `_draw_miller_map` / `load_model` from `test_predictions.py`; falls back to a plain matplotlib scatter when neither cartopy nor Basemap is installed. |
 | `tensorboard_utils.py` | Start/stop TensorBoard with multiple fallback methods. |
 
 ## Key Design Decisions & Gotchas
@@ -49,6 +50,10 @@ python main.py train regressor --epochs 50 --batch-size 32 --lr 0.001
 
 # Evaluate a trained model
 python main.py evaluate models/regressor_final.pth
+
+# Visualize the learned world representation (KMeans on 128-d embeddings, plotted on a world map)
+python main.py visualize models/regressor_final.pth
+python main.py visualize models/regressor_final.pth --n-clusters 12
 
 # Override config from JSON file
 python main.py train regressor --config my_config.json
