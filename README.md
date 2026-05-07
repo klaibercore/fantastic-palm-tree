@@ -1,6 +1,18 @@
 # Satellite Image Coordinate Prediction
 
-A PyTorch CNN that predicts geographic coordinates (latitude/longitude) from [NASA EPIC](https://epic.gsfc.nasa.gov/) satellite imagery of the Earth.
+A PyTorch convolutional neural network that predicts geographic coordinates (latitude/longitude) from [NASA EPIC](https://epic.gsfc.nasa.gov/) satellite imagery of Earth. The model ingests raw Earth images from the DSCOVR satellite and regresses the geographic position (lon, lat) of the sub-satellite point using a fully-convolutional backbone with a regression head.
+
+## Features
+
+- **Data pipeline**: Async aiohttp downloader with semaphore-limited concurrency, atomic `.tmp` → rename writes, and automatic metadata caching
+- **Temporal leakage prevention**: Train/val/test splits are performed at the **date level**, ensuring no images from the same date appear in multiple splits
+- **Reproducibility**: Seeded Python `random`, NumPy, and PyTorch RNGs with deterministic cuDNN flags (`torch.backends.cudnn.deterministic=True`)
+- **Config validation**: Enforces consistency between `grayscale` mode and `input_channels` (1 vs 3) at configuration time
+- **MPS-aware dataloaders**: Apple Silicon MPS backend automatically uses `num_workers=0` and `pin_memory=False` to avoid multiprocessing issues
+- **NaN-safe Haversine**: Distance computation clamps `a ≤ 1.0` before `asin()` to prevent floating-point rounding NaNs
+- **Map backends**: Cartopy (default, modern) with Basemap (legacy) fallback for world map visualizations
+- **Multiple output formats**: Evaluation reports in JSON, Markdown, and CSV via `EvaluationReporter`
+- **TensorBoard integration**: Training curves, model graph, hyperparameter comparison, and embedding projector
 
 ## Requirements
 
@@ -8,15 +20,20 @@ A PyTorch CNN that predicts geographic coordinates (latitude/longitude) from [NA
 torch torchvision pandas matplotlib requests pillow tqdm numpy tensorboard aiohttp certifi scipy scikit-learn
 ```
 
-Optional: `basemap` (world map plots), `seaborn`, `psutil`
+Optional: `cartopy` (preferred world map rendering), `basemap` (legacy fallback), `seaborn`, `psutil`, `torchinfo`
 
 ## Setup
 
 ```bash
+# Install core dependencies
 pip install torch torchvision pandas matplotlib requests pillow tqdm numpy tensorboard aiohttp certifi scipy scikit-learn
-```
 
-The NASA EPIC API does not require an API key (optional: `export NASA_EPIC_API_KEY="your_key"`).
+# Optional: install cartopy for world map visualizations
+pip install cartopy
+
+# The NASA EPIC API does not require an API key
+# (optional: export NASA_EPIC_API_KEY="your_key")
+```
 
 ## Usage
 
@@ -59,7 +76,7 @@ python test_predictions.py --model_path models/regressor_final.pth --num_samples
 | `--no-tensorboard` | Disable TensorBoard auto-launch |
 | `--config FILE` | Load config from JSON file |
 
-Device auto-detection: **CUDA > MPS (Apple Silicon) > CPU**
+Device auto-detection: **CUDA > MPS (Apple Silicon) > CPU**. Override with `--device`.
 
 ## Project Structure
 
@@ -74,9 +91,8 @@ eda.py                  EDA with PCA, K-Means, statistics, and overview figure
 visualization.py        Plotting (distributions, world maps, training curves, error maps)
 evaluation_reporter.py  Comprehensive metrics + report generation (JSON/MD/CSV)
 tensorboard_utils.py    TensorBoard start/stop utilities with fallback methods
-api_key_manager.py      NASA API key management
 test_predictions.py     Prediction testing + world error map
-__init__.py             Package init
+cross_validate.sh       Grid search over batch size and learning rate
 ```
 
 ## Data Organization
@@ -113,12 +129,16 @@ The `UnifiedTrainer` (`training.py`) provides:
 - **Optimizers**: Adam (default), SGD, AdamW
 - **Loss functions**: MSE (default), L1, Smooth L1
 - **Schedulers**: StepLR (default), CosineAnnealing, ReduceLROnPlateau, None
-- **Features**: Gradient clipping, checkpointing (best model), TensorBoard logging (scalars, graph, hyperparameters, embeddings)
+- **Features**: Gradient clipping, checkpointing (best model by validation loss), TensorBoard logging (scalars, graph, hyperparameters, embeddings)
 - **Coordinate evaluation**: Mean/median error in degrees + Haversine distance in km
 
 ## Evaluation
 
-`python main.py evaluate models/regressor_final.pth` computes:
+```bash
+python main.py evaluate models/regressor_final.pth
+```
+
+Computes:
 
 - Mean/median coordinate error (degrees) with percentile breakdown
 - Mean/median Haversine distance (km)
@@ -137,6 +157,20 @@ Default config is defined via dataclasses in `config.py`. Override via CLI flags
   "training": {"batch_size": 32, "learning_rate": 0.001, "epochs": 100}
 }
 ```
+
+Config validation in `Config.__post_init__()` enforces that `grayscale=True` requires `input_channels=1` and `grayscale=False` requires `input_channels=3`.
+
+## Reproducibility
+
+The `_set_seed()` function in `main.py` seeds Python `random`, NumPy, and PyTorch RNGs. When CUDA is available, `torch.backends.cudnn.deterministic` is set to `True` and `benchmark` to `False`. The random seed defaults to `42` and is configurable in `TrainingConfig`.
+
+## Temporal Leakage Prevention
+
+`SatelliteImageDataset._split_data()` shuffles **dates** (not individual samples), then assigns entire dates to train/val/test splits. This guarantees that no images captured on the same date appear across different splits, eliminating a common source of overfitting in time-series satellite data.
+
+## Map Visualizations
+
+World map plots use **cartopy** by default (modern, well-maintained). If cartopy is not installed, the code falls back to **Basemap** (legacy, deprecated). If neither is available, map plots are skipped with a warning.
 
 ## Exploratory Data Analysis
 
@@ -166,3 +200,13 @@ tensorboard --logdir logs/tensorboard
 python tensorboard_utils.py start    # auto-launch with fallback methods
 python tensorboard_utils.py stop     # stop TensorBoard on port 6006
 ```
+
+## Cross-Validation
+
+A shell script runs a grid search over batch sizes (16, 32, 64) and learning rates (0.01, 0.001, 0.0001):
+
+```bash
+bash cross_validate.sh
+```
+
+Results are logged to `cross_validation_results.csv`.

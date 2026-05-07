@@ -1,54 +1,67 @@
-# CLAUDE.md
+# CLAUDE.md — fantastic-palm-tree
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for AI coding agents working on this repository.
 
 ## Project Overview
 
-PyTorch CNN that predicts geographic coordinates (lon, lat) from NASA EPIC satellite images.
+PyTorch CNN (`LocationRegressor`) that predicts geographic coordinates (lon, lat) from NASA EPIC satellite imagery of Earth. The model uses 3 Conv2d → Tanh → MaxPool blocks, a 128-dim hidden layer, and 2 output neurons. Data flows from the NASA EPIC API through async download into per-date JSON metadata + PNG images, then into a `SatelliteImageDataset` with date-level train/val/test splitting to prevent temporal leakage.
 
-**Model**: `LocationRegressor` — 3 Conv2d blocks ([64, 128, 256] channels) → tanh → MaxPool4x4 → FC(128) → dropout → 2 outputs. Weights: Kaiming normal (conv), Xavier uniform (linear). Exposes `get_embeddings()` for feature extraction.
+## Architecture Summary
 
-**Data flow**: NASA EPIC API → async download → `combined/YYYY-MM-DD.json` (metadata) + `images/YYYY-MM-DD/*.png` → `SatelliteImageDataset` → `DataLoader` → model. Coordinates stored as [lon, lat] tensors.
+| File | Role |
+|------|------|
+| `main.py` | CLI entry point: `setup`, `train regressor`, `evaluate <path>`, `download [days]`. Sets seeds for reproducibility. |
+| `config.py` | Dataclass-based `Config(DataConfig, ModelConfig, TrainingConfig)`. Auto-detects device (CUDA > MPS > CPU). Validates grayscale ↔ input_channels consistency in `__post_init__`. |
+| `data.py` | `EPICDataDownloader` (async aiohttp, semaphore-limited concurrency, atomic .tmp → rename). `CoordinateExtractor` parses `centroid_coordinates` from per-date JSON. |
+| `datasets.py` | `SatelliteImageDataset` loads images + coords. `_split_data()` shuffles **dates** (not samples) to prevent temporal leakage. `CoordinateNormalizer` normalizes to [0,1], denormalizes, computes Haversine distance (with NaN clamping) and longitude wraparound error. `create_dataloaders()` adjusts `num_workers`/`pin_memory` per device (MPS → workers=0, pin_memory=False). |
+| `models.py` | `LocationRegressor(config.model)` — 3 conv blocks [64,128,256] → Tanh → MaxPool4 → FC(128) → Dropout(0.2) → 2 outputs. Kaiming normal (conv), Xavier uniform (linear). Exposes `get_embeddings()` for TensorBoard projector. |
+| `training.py` | `UnifiedTrainer` / `LocationRegressorTrainer`. TensorBoard logging (scalars, graph, hparams, embeddings). Gradient clipping, schedulers (StepLR/Cosine/Plateau), best-model checkpointing. |
+| `evaluation_reporter.py` | Comprehensive eval → JSON + Markdown + CSV reports. Metrics: coordinate error (deg), Haversine distance (km), accuracy thresholds. |
+| `visualization.py` | Map backend: **cartopy** (preferred) → Basemap (fallback). Distribution plots, training curves, prediction scatter, world error maps. |
+| `eda.py` | Standalone EDA: image statistics, PCA (2 components), K-Means (K=2..8, optimal via silhouette), correlations, 5×4 overview figure, TensorBoard logging. |
+| `test_predictions.py` | Single/multiple/world-error-map prediction visualization with cartopy/Basemap backend. |
+| `tensorboard_utils.py` | Start/stop TensorBoard with multiple fallback methods. |
 
-**Coordinate normalizer**: `CoordinateNormalizer` in `datasets.py` normalizes coords to [0,1] and denormalizes back. Provides longitude wraparound handling (`compute_longitude_error`) and Haversine distance (`compute_haversine_distance`).
+## Key Design Decisions & Gotchas
 
-**Training**: `UnifiedTrainer` → `LocationRegressorTrainer`. Supports Adam/SGD/AdamW, MSE/L1/SmoothL1, StepLR/Cosine/Plateau schedulers, gradient clipping, checkpointing (saves best model by val loss).
+- **Temporal leakage prevention**: `SatelliteImageDataset._split_data()` shuffles dates, then assigns all samples from each date to train/val/test. This ensures no same-date samples appear across splits.
+- **NaN clamping in Haversine**: `CoordinateNormalizer.compute_haversine_distance()` clamps `a = torch.clamp(a, max=1.0)` before `asin()` to prevent tiny float rounding errors from producing NaN.
+- **MPS quirks**: Apple Silicon MPS backend requires `num_workers=0` and `pin_memory=False` in DataLoader because MPS doesn't support multiprocessing shared memory. Handled in `create_dataloaders()`.
+- **Atomic downloads**: `EPICDataDownloader` writes images to `*.tmp` then renames atomically, preventing corrupt partial files.
+- **Config validation**: `Config.__post_init__()` enforces `grayscale=True → input_channels=1` and `grayscale=False → input_channels=3`, raising `ValueError` on mismatch.
+- **Reproducibility**: `main._set_seed(seed)` seeds Python `random`, `numpy`, `torch`, and sets `torch.backends.cudnn.deterministic=True`, `benchmark=False`.
+- **Device auto-detection**: `Config._get_best_device()`: CUDA > MPS > CPU. Overridable via `--device` flag.
+- **Weights-only loading**: `main.evaluate_model_performance()` handles PyTorch 2.6+ `weights_only` security restriction with fallback to `add_safe_globals`.
 
-**Evaluation**: `EvaluationReporter` generates JSON, MD, and CSV reports. Metrics: coordinate error (degrees), Haversine distance (km), accuracy thresholds (1/10/100/1000 km).
-
-**Device**: Auto-detected (CUDA > MPS > CPU). MPS uses `num_workers=0` due to multiprocessing limitations.
-
-## Key Architecture Details
-
-- `config.py`: Dataclass-based (`Config` → `DataConfig`, `ModelConfig`, `TrainingConfig`). Loaded via `Config()` or `Config.from_dict()`. CLI args override fields after construction.
-- `data.py`: `EPICDataDownloader` (async image downloads with aiohttp, semaphore-limited concurrency) + `CoordinateExtractor` (parses `centroid_coordinates` from JSON metadata).
-- `datasets.py`: `SatelliteImageDataset` loads images, splits train/val/test (80/10/10), applies transforms. `create_dataloaders()` auto-tunes `num_workers`/`pin_memory` per device type.
-- `main.py`: CLI entry point — commands: `setup`, `train regressor`, `evaluate <path>`, `download [days]`.
-- `training.py`: Base `UnifiedTrainer` with TensorBoard logging (scalars, graph, embeddings projector, hyperparameters). `LocationRegressorTrainer` subclass adds coordinate evaluation.
-- `eda.py`: Standalone (run directly). Computes image statistics, PCA (2 components), K-Means (K=2..8, optimal via silhouette), correlations. Generates 5×4 overview figure and TensorBoard logs.
-- `test_predictions.py`: Standalone. Loads model, runs on test set, plots single/multiple/world-error-map visualizations with Basemap.
-
-## Commands
+## Build / Run Commands
 
 ```bash
-# Train
-python main.py train regressor
-python main.py train regressor --epochs 100 --batch-size 32 --lr 0.001
-
-# Evaluate
-python main.py evaluate models/regressor_final.pth
-
-# Download
-python main.py download 7
-
-# Setup data pipeline
+# Setup data pipeline (download metadata + coordinate visualizations)
 python main.py setup
 
-# EDA
+# Download recent images (last N days)
+python main.py download 7
+python main.py download 30
+
+# Train the regressor
+python main.py train regressor
+python main.py train regressor --epochs 50 --batch-size 32 --lr 0.001
+
+# Evaluate a trained model
+python main.py evaluate models/regressor_final.pth
+
+# Override config from JSON file
+python main.py train regressor --config my_config.json
+
+# Force device
+python main.py train regressor --device mps --no-tensorboard
+
+# Exploratory data analysis
 python eda.py
 
 # Test predictions
-python test_predictions.py --model_path models/regressor_final.pth --num_samples 1 --show
+python test_predictions.py --model_path models/regressor_final.pth
+python test_predictions.py --model_path models/regressor_final.pth --num_samples 6
 python test_predictions.py --model_path models/regressor_final.pth --num_samples 100 --world_map
 
 # TensorBoard
@@ -56,7 +69,19 @@ tensorboard --logdir logs/tensorboard
 python tensorboard_utils.py start
 python tensorboard_utils.py stop
 
-# Override config
-python main.py train regressor --config my_config.json
-python main.py train regressor --device mps --no-tensorboard
+# Cross-validation grid search
+bash cross_validate.sh
 ```
+
+## Development Conventions
+
+- **Testing**: No formal test framework. Validate changes by training on a small epoch count (`--epochs 5`) and checking evaluation metrics.
+- **Formatting**: Standard Python with docstrings on all public classes/functions. Use `logging.getLogger(__name__)` for logging.
+- **Commit style**: One-line descriptive messages. Recent example: `"Fix 11 bugs: data correctness, reproducibility, and map backend"`.
+- **Imports**: Standard lib → third-party → local, separated by blank lines.
+- **Device handling**: Always check `device.type == 'mps'` or `torch.cuda.is_available()` when making hardware-dependent decisions.
+
+## Dependencies
+
+Core: `torch torchvision pandas matplotlib requests pillow tqdm numpy tensorboard aiohttp certifi scipy scikit-learn`
+Optional: `cartopy` (world map plots, preferred), `basemap` (fallback), `seaborn`, `psutil`, `torchinfo`
