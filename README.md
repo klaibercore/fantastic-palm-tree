@@ -13,6 +13,7 @@ A PyTorch convolutional neural network that predicts geographic coordinates (lat
 - **Map backends**: Cartopy (default, modern) with Basemap (legacy) fallback for world map visualizations
 - **Multiple output formats**: Evaluation reports in JSON, Markdown, and CSV via `EvaluationReporter`
 - **TensorBoard integration**: Training curves, model graph, hyperparameter comparison, and embedding projector
+- **Learned representation visualization**: `visualize` subcommand renders KMeans clusters of the model's 128-d test embeddings on a world map — contiguous geographic regions indicate the model has learned geography in feature space
 
 ## Requirements
 
@@ -52,6 +53,10 @@ python main.py train regressor --epochs 50
 # Evaluate a trained model
 python main.py evaluate models/regressor_final.pth
 
+# Visualize the learned world representation
+python main.py visualize models/regressor_final.pth
+python main.py visualize models/regressor_final.pth --n-clusters 12
+
 # Run exploratory data analysis
 python eda.py
 
@@ -74,6 +79,7 @@ python test_predictions.py --model_path models/regressor_final.pth --num_samples
 | `--lr RATE` | Override learning rate |
 | `--device DEVICE` | Force device: `auto` (default), `cuda`, `mps`, `cpu` |
 | `--no-tensorboard` | Disable TensorBoard auto-launch |
+| `--n-clusters N` | Number of KMeans clusters for `visualize` (default: 8) |
 | `--config FILE` | Load config from JSON file |
 
 Device auto-detection: **CUDA > MPS (Apple Silicon) > CPU**. Override with `--device`.
@@ -81,7 +87,7 @@ Device auto-detection: **CUDA > MPS (Apple Silicon) > CPU**. Override with `--de
 ## Project Structure
 
 ```
-main.py                 CLI entry point (setup / train / evaluate / download)
+main.py                 CLI entry point (setup / train / evaluate / visualize / download)
 config.py               Dataclass-based configuration (DataConfig, ModelConfig, TrainingConfig)
 models.py               LocationRegressor CNN with configurable conv channels
 training.py             UnifiedTrainer + LocationRegressorTrainer with TensorBoard logging
@@ -92,6 +98,7 @@ visualization.py        Plotting (distributions, world maps, training curves, er
 evaluation_reporter.py  Comprehensive metrics + report generation (JSON/MD/CSV)
 tensorboard_utils.py    TensorBoard start/stop utilities with fallback methods
 test_predictions.py     Prediction testing + world error map
+visualize_representation.py  Renders KMeans clusters of 128-d test embeddings on a world map
 cross_validate.sh       Grid search over batch size and learning rate
 ```
 
@@ -171,6 +178,15 @@ The `_set_seed()` function in `main.py` seeds Python `random`, NumPy, and PyTorc
 ## Map Visualizations
 
 World map plots use **cartopy** by default (modern, well-maintained). If cartopy is not installed, the code falls back to **Basemap** (legacy, deprecated). If neither is available, map plots are skipped with a warning.
+
+## Learned Representation Visualization
+
+```bash
+python main.py visualize models/regressor_final.pth
+python main.py visualize models/regressor_final.pth --n-clusters 12
+```
+
+Extracts 128-d embeddings from the test set via `LocationRegressor.get_embeddings()`, runs `StandardScaler + KMeans` on them, then plots each test sample on a Miller-projection world map at its true (lon, lat), colored by its feature-space cluster id. Cluster ids are reordered by each centroid's PC1 score so adjacent ids correspond to adjacent feature-space directions, giving the categorical colormap continuity. If the model has learned geography, clusters form contiguous regions (continents, ocean basins, latitude bands); otherwise the colors look like salt-and-pepper noise. Output is saved to `outputs/representation_<timestamp>.png` at 300 dpi. Falls back to a plain matplotlib scatter when neither cartopy nor Basemap is installed.
 
 ## Exploratory Data Analysis
 
