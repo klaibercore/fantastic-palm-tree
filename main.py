@@ -19,6 +19,7 @@ from visualization import (
     plot_world_map_with_coordinates,
     create_coordinate_statistics_table
 )
+from visualize_representation import visualize_representation
 
 # Setup logging
 logging.basicConfig(
@@ -204,14 +205,15 @@ def main():
   %(prog)s setup                    # Setup complete data pipeline
   %(prog)s train regressor          # Train location regressor
   %(prog)s evaluate model.pth       # Evaluate trained model
+  %(prog)s visualize model.pth      # Visualize learned world representation
   %(prog)s download 7               # Download last 7 days
   %(prog)s download 30              # Download last 30 days
         """
     )
-    
+
     # Main command
-    parser.add_argument("command", 
-                       choices=["setup", "train", "evaluate", "download"],
+    parser.add_argument("command",
+                       choices=["setup", "train", "evaluate", "visualize", "download"],
                        help="Command to execute")
     
     # Command-specific arguments
@@ -229,6 +231,8 @@ def main():
                        help="Training device (auto-detects: cuda > mps > cpu)")
     parser.add_argument("--no-tensorboard", action="store_true",
                        help="Disable automatic TensorBoard launch")
+    parser.add_argument("--n-clusters", type=int, default=8,
+                       help="Number of KMeans clusters for visualize (default: 8)")
     
     args = parser.parse_args()
     
@@ -275,7 +279,18 @@ def main():
             if not args.target:
                 raise ValueError("Evaluation requires specifying model path")
             evaluate_model_performance(config, args.target)
-            
+
+        elif args.command == "visualize":
+            if not args.target:
+                raise ValueError("Visualize requires specifying model path")
+            import os
+            os.makedirs("outputs", exist_ok=True)
+            visualize_representation(
+                config, args.target,
+                n_clusters=args.n_clusters,
+                seed=config.training.random_seed,
+            )
+
         elif args.command == "download":
             num_days = int(args.target) if args.target else 7
             download_data(config, num_days)
